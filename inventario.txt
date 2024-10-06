@@ -1,0 +1,460 @@
+/*System Inventario Dialog By VH7x*/
+
+#include <YSI_Coding\y_hooks>
+
+#if !defined INVENTORY_EXTRA_SAFETY
+    #define INVENTORY_EXTRA_SAFETY 1
+#endif
+
+#define INVENTORY_DIALOG_ID 7777
+#define INVENTORY_SELECT_AMOUNT_DIALOG_ID 7778
+
+#define INVENTORY_SLOTS_COUNT 10
+#define INVENTORY_INVALID_ITEM -1
+#define INVENTORY_MAX_GROUP_NAME_LEN 14
+#define INVENTORY_MAX_ITEM_NAME_LEN 24
+
+static bool:s_pIsOpen[MAX_PLAYERS];
+static s_pItems[MAX_PLAYERS][INVENTORY_SLOTS_COUNT];
+static s_pItemsAmount[MAX_PLAYERS][INVENTORY_SLOTS_COUNT];
+static s_pMenu[MAX_PLAYERS][INVENTORY_SLOTS_COUNT];
+
+enum {
+    ITEM_GROUP_WEAPON,
+    ITEM_GROUP_SKIN,
+    ITEM_GROUP_SPECIAL,
+
+    ITEM_GROUPS_COUNT
+}
+
+/* ---------------- Weapon ---------------- */
+
+static const WEAPON_NAMES[][] = {
+    "Punho",
+    "Soco Inglês",
+    "Taco de Golfe",
+    "Cassetete",
+    "Faca",
+    "Taco de Baseball",
+    "Pá",
+    "Taco de Sinuca",
+    "Katana",
+    "Motosserra",
+    "Dildo Roxo",
+    "Dildo",
+    "Vibrador",
+    "Vibrador Prateado",
+    "Flores",
+    "Bengala",
+    "Granada",
+    "Gás Lacrimogêneo",
+    "Coquetel Molotov",
+    "",
+    "",
+    "",
+    "9mm",
+    "9mm Silenciada",
+    "Desert Eagle",
+    "Escopeta",
+    "Escopeta Sawnoff",
+    "Escopeta de Combate",
+    "Micro SMG",
+    "MP5",
+    "AK-47",
+    "M4",
+    "Tec-9",
+    "Rifle de Caça",
+    "Rifle de Precisão",
+    "RPG",
+    "Foguete Teleguiado",
+    "Lança-chamas",
+    "Minigun",
+    "Carga Explosiva",
+    "Detonador",
+    "Lata de Spray",
+    "Extintor",
+    "Câmera",
+    "Visão Noturna",
+    "Visão Térmica",
+    "Paraquedas"
+};
+
+static ItemWeaponGetGroupName(name[], sizeOfName = sizeof name) {
+    strcopy(name, "Armas", sizeOfName);
+}
+
+static ItemWeaponGetName(itemID, name[], sizeOfName = sizeof name) {
+    strcopy(name, WEAPON_NAMES[itemID], sizeOfName);
+}
+
+static ItemWeaponUse(playerid, itemID, amount, slotIdx) {
+    #pragma unused slotIdx
+
+    GivePlayerWeapon(playerid, itemID, amount);
+
+    return amount;
+}
+
+/* ---------------- Skin ---------------- */
+
+static ItemSkinGetGroupName(name[], sizeOfName = sizeof name) {
+    strcopy(name, "Skins", sizeOfName);
+}
+
+static ItemSkinGetName(itemID, name[], sizeOfName = sizeof name) {
+    format(name, sizeOfName, "ID: %d", itemID);
+}
+
+enum {
+    ITEM_SPECIAL_HEALTH,
+    ITEM_SPECIAL_ARMOUR,
+    ITEM_SPECIAL_JETPACK,
+    ITEM_SPECIAL_KILL,
+}
+
+static ItemSkinUse(playerid, itemID, amount, slotIdx) {
+    #pragma unused amount
+
+    InventorySet(
+        playerid, slotIdx, ItemCreate(ITEM_GROUP_SKIN, GetPlayerSkin(playerid)), 1);
+
+    SetPlayerSkin(playerid, itemID);
+
+    return 0;
+}
+
+/* ---------------- Special ---------------- */
+
+static ItemSpecialGetGroupName(name[], sizeOfName = sizeof name) {
+    strcopy(name, "Especiais", sizeOfName);
+}
+
+static ItemSpecialGetName(itemID, name[], sizeOfName = sizeof name) {
+    switch (itemID) {
+        case ITEM_SPECIAL_HEALTH: strcopy(name, "Vida", sizeOfName);
+        case ITEM_SPECIAL_ARMOUR: strcopy(name, "Colete", sizeOfName);
+        case ITEM_SPECIAL_JETPACK: strcopy(name, "JetPack", sizeOfName);
+        case ITEM_SPECIAL_KILL: strcopy(name, "Morte", sizeOfName);
+    }
+}
+
+static ItemSpecialUse(playerid, itemID, amount, slotIdx) {
+    #pragma unused slotIdx
+
+    switch (itemID) {
+        case ITEM_SPECIAL_HEALTH: {
+            new Float:health;
+            GetPlayerHealth(playerid, health);
+            SetPlayerHealth(playerid, health + float(amount));
+
+            return amount;
+        }
+
+        case ITEM_SPECIAL_ARMOUR: {
+            new Float:armour;
+            GetPlayerArmour(playerid, armour);
+            SetPlayerArmour(playerid, armour + float(amount));
+
+            return amount;
+        }
+
+        case ITEM_SPECIAL_JETPACK: {
+            SetPlayerSpecialAction(playerid, SPECIAL_ACTION_USEJETPACK);
+            return 0;
+        }
+
+        case ITEM_SPECIAL_KILL: {
+            SetPlayerHealth(playerid, 0.0);
+            return amount;
+        }
+    }
+
+    return 0;
+}
+
+/* ---------------- Item ---------------- */
+
+static enum ITEM_VTABLE {
+    ITEM_VTABLE_GETGROUPNAME,
+    ITEM_VTABLE_GETNAME,
+    ITEM_VTABLE_USE,
+}
+
+static s_items[ITEM_GROUPS_COUNT][ITEM_VTABLE];
+
+ItemCreate(groupID, itemID) {
+    return groupID | (itemID << 8);
+}
+
+ItemRegisterGroup(groupID, getGroupName, getName, useItem) {
+    s_items[groupID][ITEM_VTABLE_GETGROUPNAME] = getGroupName;
+    s_items[groupID][ITEM_VTABLE_GETNAME] = getName;
+    s_items[groupID][ITEM_VTABLE_USE] = useItem;
+}
+
+ItemGetGroupName(item) {
+    new name[INVENTORY_MAX_GROUP_NAME_LEN + 1];
+    CallFunction(s_items[item & 0xFF][ITEM_VTABLE_GETGROUPNAME], __addressof(name), sizeof name);
+
+    return name;
+}
+
+ItemGetName(item) {
+    new name[INVENTORY_MAX_ITEM_NAME_LEN + 1];
+    CallFunction(s_items[item & 0xFF][ITEM_VTABLE_GETNAME], (item >> 8) & 0xFFFFFF, __addressof(name), sizeof name);
+
+    return name;
+}
+
+ItemUse(playerid, item, amount, slotIdx) {
+    return CallFunction(
+        s_items[item & 0xFF][ITEM_VTABLE_USE],
+        playerid, (item >> 8) & 0xFFFFFF, amount, slotIdx
+    );
+}
+
+/* ---------------- Inventory ---------------- */
+
+InventoryOpen(playerid) {
+    static body[INVENTORY_SLOTS_COUNT * (INVENTORY_MAX_GROUP_NAME_LEN + INVENTORY_MAX_ITEM_NAME_LEN + 20)];
+    static buf[INVENTORY_MAX_GROUP_NAME_LEN + INVENTORY_MAX_ITEM_NAME_LEN + 20];
+
+    body[0] = EOS;
+    buf[0] = EOS;
+
+    new bodyLength = strcat(body, "Nome\tGrupo\tQuantidade\n");
+    new rows;
+
+    for (new i; i < INVENTORY_SLOTS_COUNT; ++i) {
+        if (s_pItemsAmount[playerid][i] == 0)
+            continue;
+
+        format(
+            buf, sizeof buf,
+            "%s\t%s\t%d\n",
+            ItemGetName(s_pItems[playerid][i]),
+            ItemGetGroupName(s_pItems[playerid][i]),
+            s_pItemsAmount[playerid][i]
+        );
+
+        bodyLength += strcat(body[bodyLength], buf, sizeof body - bodyLength);
+        s_pMenu[playerid][rows++] = i;
+    }
+
+    #if INVENTORY_EXTRA_SAFETY
+    for (; rows < INVENTORY_SLOTS_COUNT; ++rows)
+        s_pMenu[playerid][rows] = -1;
+    #endif
+
+    if (bodyLength > 1) {
+        // Remove the last \n character.
+        body[bodyLength - 1] = EOS;
+    }
+
+    ShowPlayerDialog(playerid, INVENTORY_DIALOG_ID, DIALOG_STYLE_TABLIST_HEADERS, "Inventário", body, "Usar", "Fechar");
+
+    s_pIsOpen[playerid] = true;
+}
+
+InventoryAddItem(playerid, item, amount) {
+    new slotIdx = -1;
+
+    for (new i; i < INVENTORY_SLOTS_COUNT; ++i) {
+        if (s_pItemsAmount[playerid][i] != 0)
+            continue;
+
+        slotIdx = i;
+        break;
+    }
+
+    if (slotIdx == -1)
+        return 1;
+
+    s_pItems[playerid][slotIdx] = item;
+    s_pItemsAmount[playerid][slotIdx] = amount;
+
+    return 0;
+}
+
+InventorySet(playerid, slotIdx, item, amount) {
+    s_pItems[playerid][slotIdx] = item;
+    s_pItemsAmount[playerid][slotIdx] = amount;
+}
+
+hook OnGameModeInit() {
+    ItemRegisterGroup(
+        ITEM_GROUP_WEAPON,
+        __addressof(ItemWeaponGetGroupName),
+        __addressof(ItemWeaponGetName),
+        __addressof(ItemWeaponUse)
+    );
+
+    ItemRegisterGroup(
+        ITEM_GROUP_SKIN,
+        __addressof(ItemSkinGetGroupName),
+        __addressof(ItemSkinGetName),
+        __addressof(ItemSkinUse)
+    );
+
+    ItemRegisterGroup(
+        ITEM_GROUP_SPECIAL,
+        __addressof(ItemSpecialGetGroupName),
+        __addressof(ItemSpecialGetName),
+        __addressof(ItemSpecialUse)
+    );
+
+    return 1;
+}
+
+hook OnPlayerConnect(playerid) {
+    s_pIsOpen[playerid] = false;
+
+    for (new i; i < INVENTORY_SLOTS_COUNT; ++i)
+        s_pItemsAmount[playerid][i] = 0;
+
+    return 1;
+}
+
+hook OnPlayerKeyStateChange(playerid, newkeys, oldkeys) {
+    if (PRESSED(KEY_NO) && !s_pIsOpen[playerid])
+        InventoryOpen(playerid);
+
+    return 1;
+}
+
+hook OnDialogResponse(playerid, dialogid, response, listitem, inputtext[]) {
+    if (!response)
+        goto CLOSE_AND_RETURN;
+
+    if (dialogid == INVENTORY_DIALOG_ID) {
+        #if INVENTORY_EXTRA_SAFETY
+        if (listitem < 0 || listitem >= INVENTORY_SLOTS_COUNT)
+            goto CLOSE_AND_RETURN;
+        #endif
+
+        new slotIdx = s_pMenu[playerid][listitem];
+
+        #if INVENTORY_EXTRA_SAFETY
+        if (slotIdx == -1)
+            goto CLOSE_AND_RETURN;
+        #endif
+
+        if (s_pItemsAmount[playerid][slotIdx] == 1) {
+            s_pItemsAmount[playerid][slotIdx] -= ItemUse(
+                playerid, s_pItems[playerid][slotIdx], 1, slotIdx);
+
+            PlayerPlaySound(playerid, 1054, 0.0, 0.0, 0.0);
+
+            goto CLOSE_AND_RETURN;
+        }
+
+        SetPVarInt(playerid, "slot", slotIdx);
+
+        ShowPlayerDialog(
+            playerid,
+            INVENTORY_SELECT_AMOUNT_DIALOG_ID,
+            DIALOG_STYLE_INPUT,
+            "Inventário - Selecionar quantidade",
+            "Digite a quantidade que você deseja usar:",
+            "Confirmar",
+            "Cancelar"
+        );
+    }
+    else if (dialogid == INVENTORY_SELECT_AMOUNT_DIALOG_ID) {
+        #if INVENTORY_EXTRA_SAFETY
+        if (s_pIsOpen[playerid] == false)
+            return 1;
+        #endif
+
+        s_pIsOpen[playerid] = false;
+
+        new slotIdx = GetPVarInt(playerid, "slot");
+        DeletePVar(playerid, "slot");
+
+        new amount;
+
+        if (sscanf(inputtext, "d", amount))
+            return SendClientMessage(playerid, -1, "ERRO: digite apenas números!");
+
+        if (amount > s_pItemsAmount[playerid][slotIdx])
+            return SendClientMessage(playerid, -1, "ERRO: você não tem essa quantia!");
+
+        s_pItemsAmount[playerid][slotIdx] -= ItemUse(
+            playerid, s_pItems[playerid][slotIdx], amount, slotIdx);
+
+        PlayerPlaySound(playerid, 1054, 0.0, 0.0, 0.0);
+    }
+
+    return 1;
+
+CLOSE_AND_RETURN:
+    s_pIsOpen[playerid] = false;
+    return 1;
+}
+
+CMD:skin(playerid, const params[]) {
+    new targetid;
+    new skinid;
+
+    if (sscanf(params, "rd", targetid, skinid))
+        return SendClientMessage(playerid, -1, "Use /skin [nome/ID do jogador] [skin]");
+
+    if (targetid == INVALID_PLAYER_ID)
+        return SendClientMessage(playerid, -1, "ERRO: esse player não está conectado!");
+
+    if (InventoryAddItem(targetid, ItemCreate(ITEM_GROUP_SKIN, skinid), 1) == 0)
+        return SendClientMessage(playerid, -1, "(+) Skin adicionada ao inventário do jogador.");
+
+    return SendClientMessage(playerid, -1, "ERRO: o inventário do jogador está cheio.");
+}
+
+CMD:arma(playerid, const params[]) {
+    new targetid;
+    new weaponid;
+    new ammo;
+
+    if (sscanf(params, "rk<weapon>d", targetid, weaponid, ammo))
+        return SendClientMessage(playerid, -1, "Use /arma [nome/ID do jogador] [arma] [munição]");
+
+    if (targetid == INVALID_PLAYER_ID)
+        return SendClientMessage(playerid, -1, "ERRO: esse player não está conectado!");
+
+    if (weaponid < 0 || weaponid >= sizeof WEAPON_NAMES)
+        return SendClientMessage(playerid, -1, "ERRO: arma inválida!");
+
+    if (InventoryAddItem(targetid, ItemCreate(ITEM_GROUP_WEAPON, weaponid), ammo) == 0)
+        return SendClientMessage(playerid, -1, "(+) Arma adicionada ao inventário do jogador.");
+
+    return SendClientMessage(playerid, -1, "ERRO: o inventário do jogador está cheio.");
+}
+
+CMD:vida(playerid, const params[]) {
+    new targetid;
+    new amount;
+
+    if (sscanf(params, "rd", targetid, amount))
+        return SendClientMessage(playerid, -1, "Use /vida [nome/ID do jogador] [quantidade]");
+
+    if (targetid == INVALID_PLAYER_ID)
+        return SendClientMessage(playerid, -1, "ERRO: esse player não está conectado!");
+
+    if (InventoryAddItem(targetid, ItemCreate(ITEM_GROUP_SPECIAL, ITEM_SPECIAL_HEALTH), amount) == 0)
+        return SendClientMessage(playerid, -1, "(+) Item adicionado ao inventário do jogador.");
+
+    return SendClientMessage(playerid, -1, "ERRO: o inventário do jogador está cheio.");
+}
+
+CMD:jetpack(playerid, const params[]) {
+    new targetid;
+
+    if (sscanf(params, "r", targetid))
+        return SendClientMessage(playerid, -1, "Use /jetpack [nome/ID do jogador]");
+
+    if (targetid == INVALID_PLAYER_ID)
+        return SendClientMessage(playerid, -1, "ERRO: esse player não está conectado!");
+
+    if (InventoryAddItem(targetid, ItemCreate(ITEM_GROUP_SPECIAL, ITEM_SPECIAL_JETPACK), 1) == 0)
+        return SendClientMessage(playerid, -1, "(+) JetPack adicionado ao inventário do jogador.");
+
+    return SendClientMessage(playerid, -1, "ERRO: o inventário do jogador está cheio.");
+}
